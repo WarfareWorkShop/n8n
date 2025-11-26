@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import MainSidebarUserArea from '@/components/MainSidebarUserArea.vue';
-import { useMessage } from '@/composables/useMessage';
-import { useToast } from '@/composables/useToast';
-import { MODAL_CONFIRM, VIEWS } from '@/constants';
+import MainSidebarUserArea from '@/app/components/MainSidebarUserArea.vue';
+import { useMessage } from '@/app/composables/useMessage';
+import { useToast } from '@/app/composables/useToast';
+import { MODAL_CONFIRM, VIEWS } from '@/app/constants';
 import { useChatStore } from '@/features/ai/chatHub/chat.store';
 import { groupConversationsByDate } from '@/features/ai/chatHub/chat.utils';
 import ChatSidebarLink from '@/features/ai/chatHub/components/ChatSidebarLink.vue';
 import { useChatHubSidebarState } from '@/features/ai/chatHub/composables/useChatHubSidebarState';
-import { CHAT_VIEW } from '@/features/ai/chatHub/constants';
-import { useSettingsStore } from '@/stores/settings.store';
+import { CHAT_VIEW, CHAT_AGENTS_VIEW } from '@/features/ai/chatHub/constants';
+import { useSettingsStore } from '@/app/stores/settings.store';
 import { N8nIconButton, N8nScrollArea, N8nText } from '@n8n/design-system';
 import Logo from '@n8n/design-system/components/N8nLogo';
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { useIntersectionObserver } from '@vueuse/core';
 import ChatSessionMenuItem from './ChatSessionMenuItem.vue';
+import SkeletonMenuItem from './SkeletonMenuItem.vue';
+import { useTelemetry } from '@/app/composables/useTelemetry';
 
 defineProps<{ isMobileDevice: boolean }>();
 
@@ -24,8 +27,10 @@ const toast = useToast();
 const message = useMessage();
 const sidebar = useChatHubSidebarState();
 const settingsStore = useSettingsStore();
+const telemetry = useTelemetry();
 
 const renamingSessionId = ref<string>();
+const loadMoreTrigger = ref<HTMLElement | null>(null);
 
 const currentSessionId = computed(() =>
 	typeof route.params.id === 'string' ? route.params.id : undefined,
@@ -76,8 +81,25 @@ async function handleDeleteSession(sessionId: string) {
 	}
 }
 
-onMounted(async () => {
-	await chatStore.fetchSessions();
+function handleNewChatClick() {
+	telemetry.track('User clicked new chat button', {});
+	sidebar.toggleOpen(false);
+}
+
+useIntersectionObserver(
+	loadMoreTrigger,
+	([{ isIntersecting }]) => {
+		if (isIntersecting) {
+			void chatStore.fetchMoreSessions();
+		}
+	},
+	{ threshold: 0.1 },
+);
+
+onMounted(() => {
+	if (!chatStore.sessionsReady) {
+		void chatStore.fetchSessions(true);
+	}
 });
 </script>
 
@@ -112,12 +134,29 @@ onMounted(async () => {
 				label="New Chat"
 				icon="square-pen"
 				:active="route.name === CHAT_VIEW"
+				@click="handleNewChatClick"
+			/>
+			<ChatSidebarLink
+				:to="{ name: CHAT_AGENTS_VIEW }"
+				label="Custom Agents"
+				icon="robot"
+				:active="route.name === CHAT_AGENTS_VIEW"
 				@click="sidebar.toggleOpen(false)"
 			/>
 		</div>
 		<N8nScrollArea as-child type="scroll">
 			<div :class="$style.items">
-				<div v-for="group in groupedConversations" :key="group.group" :class="$style.group">
+				<div
+					v-if="groupedConversations.length === 0 && !chatStore.sessionsReady"
+					:class="$style.group"
+				>
+					<SkeletonMenuItem v-for="i in 10" :key="`loading-${i}`" />
+				</div>
+				<div
+					v-for="(group, index) in groupedConversations"
+					:key="group.group"
+					:class="$style.group"
+				>
 					<N8nText :class="$style.groupHeader" size="small" bold color="text-light">
 						{{ group.group }}
 					</N8nText>
@@ -132,7 +171,12 @@ onMounted(async () => {
 						@confirm-rename="handleConfirmRename"
 						@delete="handleDeleteSession"
 					/>
+					<template v-if="index === groupedConversations.length - 1 && chatStore.sessionsLoading">
+						<SkeletonMenuItem v-for="i in 10" :key="i" />
+					</template>
 				</div>
+
+				<div ref="loadMoreTrigger" :class="$style.loadMoreTrigger"></div>
 			</div>
 		</N8nScrollArea>
 		<MainSidebarUserArea :fully-expanded="true" :is-collapsed="false" />
@@ -186,6 +230,11 @@ onMounted(async () => {
 
 .groupHeader {
 	padding: 0 var(--spacing--4xs) var(--spacing--3xs) var(--spacing--4xs);
+}
+
+.loadMoreTrigger {
+	height: 1px;
+	width: 100%;
 }
 
 .loading,
